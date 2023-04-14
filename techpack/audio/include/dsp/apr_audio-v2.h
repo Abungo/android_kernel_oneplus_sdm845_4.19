@@ -11499,28 +11499,18 @@ union afe_spkr_prot_config {
 #define DSM_TX_PORT_ID      AFE_PORT_ID_QUATERNARY_MI2S_TX
 
 struct afe_dsm_param_array {
-    uint32_t    count;
-    uint32_t    flagToWrite;
-    uint32_t    Reserve[2];
-    uint32_t    params[100];
+	uint32_t    data[110];
 };
 
-struct afe_dsm_set_command {
-    struct apr_hdr hdr;
-    struct afe_port_cmd_set_param_v2 param;
-    struct afe_port_param_data_v2 pdata;
-} __packed;
-
-struct afe_dsm_get_command {
-    struct apr_hdr hdr;
-    struct afe_port_cmd_get_param_v2 param;
-    struct afe_port_param_data_v2 pdata;
+struct afe_dsm_get_param {
+struct param_hdr_v3 pdata;
+	struct afe_dsm_param_array param;
 } __packed;
 
 struct afe_dsm_get_resp {
-    uint32_t status;
-    struct afe_port_param_data_v2 pdata;
-    uint32_t payload[0];
+	uint32_t status;
+	struct param_hdr_v3 pdata;
+	struct afe_dsm_param_array param;
 } __packed;
 #endif
 
