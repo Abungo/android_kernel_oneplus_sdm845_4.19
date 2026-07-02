@@ -63,6 +63,7 @@
 
 #include "synaptics_redremote.h"
 #include <linux/project_info.h>
+#include <linux/soc/qcom/smem.h>
 #include "synaptics_baseline.h"
 #include "synaptics_dsx_core.h"
 #include <linux/oneplus/boot_mode.h>
@@ -5488,10 +5489,17 @@ static int synaptics_parse_dts(struct device *dev, struct synaptics_ts_data *ts)
 	else
 		ts->support_1080x2160_tp = false;
 
-	if (of_property_read_bool(np, "oem,support_1080x2340_tp"))
+	if (of_property_read_bool(np, "oem,support_1080x2340_tp") || of_property_read_bool(np, "oem,fajta")) {
 		ts->support_1080x2340_tp = true;
-	else
-		ts->support_1080x2340_tp = false;
+	} else {
+		struct project_info *prj_info;
+		size_t size = 0;
+		prj_info = qcom_smem_get(QCOM_SMEM_HOST_ANY, SMEM_PROJECT_INFO, &size);
+		if (!IS_ERR_OR_NULL(prj_info) && !strncmp(prj_info->project_name, "18801", 5))
+			ts->support_1080x2340_tp = true;
+		else
+			ts->support_1080x2340_tp = false;
+	}
 
 	if(of_property_read_bool(np, "oem,support_hw_poweroff"))
 		ts->support_hw_poweroff=true;
@@ -5778,8 +5786,15 @@ static int synaptics_ts_probe(struct i2c_client *client, const struct i2c_device
 
 	synaptics_parse_dts(&client->dev, ts);
 	ts->project_version = 0x00;
-	if (of_property_read_bool(ts->dev->of_node, "oem,fajta"))
+	if (of_property_read_bool(ts->dev->of_node, "oem,fajta")) {
 		ts->project_version = 0x03;
+	} else {
+		struct project_info *prj_info;
+		size_t size = 0;
+		prj_info = qcom_smem_get(QCOM_SMEM_HOST_ANY, SMEM_PROJECT_INFO, &size);
+		if (!IS_ERR_OR_NULL(prj_info) && !strncmp(prj_info->project_name, "18801", 5))
+			ts->project_version = 0x03;
+	}
 	/***power_init*****/
 	ret = tpd_power(ts, 1);
 	if( ret < 0 )
@@ -5857,9 +5872,11 @@ static int synaptics_ts_probe(struct i2c_client *client, const struct i2c_device
 			    sizeof(ts->fw_name));
 			ts->max_x = 1080;
 			ts->max_y = 2340;
+			LCD_HEIGHT = 2340;
 		} else {
 			ts->max_x = 1080;
 			ts->max_y = 2280;
+			LCD_HEIGHT = 2280;
 		}
 		F12_2D_CTRL20 = F12_2D_CTRL_BASE + 0x06;/*0x07 for s3508*/
 		F12_2D_CTRL27 = F12_2D_CTRL_BASE + 0x09;
