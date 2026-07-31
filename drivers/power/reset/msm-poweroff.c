@@ -565,19 +565,13 @@ finish_set_restart_reason:
  */
 static void deassert_ps_hold(void)
 {
-	struct scm_desc desc = {
-		.args[0] = 0,
-		.arginfo = SCM_ARGS(1),
-	};
-
-	if (scm_deassert_ps_hold_supported) {
-		/* This call will be available on ARMv8 only */
-		scm_call2_atomic(SCM_SIP_FNID(SCM_SVC_PWR,
-				 SCM_IO_DEASSERT_PS_HOLD), &desc);
-	}
-
-	/* Fall-through to the direct write in case the scm_call "returns" */
+	/*
+	 * Directly write 0 to msm_ps_hold MMIO register to pull PS_HOLD line low instantly.
+	 * Bypassing SCM TrustZone call prevents PMIC rails from hanging in warm standby,
+	 * triggering hardware 0x04 cold power-down on PM8998 and PMI8998.
+	 */
 	__raw_writel(0, msm_ps_hold);
+	mb();
 }
 
 static void do_msm_restart(enum reboot_mode reboot_mode, const char *cmd)
