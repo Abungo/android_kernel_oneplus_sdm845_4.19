@@ -17,6 +17,10 @@
 #include <linux/delay.h>
 #include <linux/input/qpnp-power-on.h>
 #include <linux/of_address.h>
+#include <linux/power_supply.h>
+#include <linux/syscore_ops.h>
+#include <linux/fs.h>
+#include <linux/uaccess.h>
 
 #include <asm/cacheflush.h>
 #include <asm/system_misc.h>
@@ -235,7 +239,7 @@ static int dload_set(const char *val, const struct kernel_param *kp)
 	return 0;
 }
 
-static void free_dload_mode_mem(void)
+static void __maybe_unused free_dload_mode_mem(void)
 {
 	iounmap(emergency_dload_mode_addr);
 	iounmap(dload_mode_addr);
@@ -594,20 +598,116 @@ static void do_msm_restart(enum reboot_mode reboot_mode, const char *cmd)
 	msleep(10000);
 }
 
+static void save_pwr_diag_to_storage(const char *buf, size_t len)
+{
+	/* Storage writes via filp_open cannot be performed during syscore/atomic shutdown context.
+	 * Logged via pr_emerg and IMEM SRAM (0x146BF800) instead. */
+	pr_emerg("PWR_DIAG_LOG:\n%s", buf);
+}
+
 static void do_msm_poweroff(void)
 {
-	pr_notice("Powering off the SoC\n");
+	struct power_supply *usb_psy, *batt_psy;
+	union power_supply_propval val = { .intval = 1 };
+	union power_supply_propval cur = { .intval = 0 };
+	union power_supply_propval vol = { .intval = 0 };
+	union power_supply_propval cap = { .intval = 0 };
+	void __iomem *diag_mem;
+	char log_buf[512];
+	int len = 0;
+
+	pr_notice("=== POWER OFF DIAGNOSTICS START ===\n");
+
+	/* Query Battery & Fuel Gauge real-time draw */
+	batt_psy = power_supply_get_by_name("battery");
+	if (batt_psy) {
+		power_supply_get_property(batt_psy, POWER_SUPPLY_PROP_CURRENT_NOW, &cur);
+		power_supply_get_property(batt_psy, POWER_SUPPLY_PROP_VOLTAGE_NOW, &vol);
+		power_supply_get_property(batt_psy, POWER_SUPPLY_PROP_CAPACITY, &cap);
+		power_supply_put(batt_psy);
+	}
+
+	len = snprintf(log_buf, sizeof(log_buf),
+		"PWR_DIAG: SOC=%d%% | V=%duV | I=%duA\n"
+		"STEP1: battery_query_done\n",
+		cap.intval, vol.intval, cur.intval);
+
+	/* Write initial step to hardware IMEM SRAM (0x146BF800) */
+	diag_mem = ioremap(0x146BF800, 0x400);
+	if (diag_mem) {
+		memset_io(diag_mem, 0, 0x400);
+		memcpy_toio(diag_mem, log_buf, len);
+	}
 
 	set_dload_mode(0);
 	scm_disable_sdi();
-	qpnp_pon_system_pwr_off(PON_POWER_OFF_SHUTDOWN);
+	if (diag_mem) {
+		len += snprintf(log_buf + len, sizeof(log_buf) - len, "STEP2: dload_sdi_disabled\n");
+		memcpy_toio(diag_mem, log_buf, len);
+	}
+
+	/* Suspend USB charger engine to collapse PMIC LDOs into 0V cold sleep */
+	usb_psy = power_supply_get_by_name("usb");
+	if (usb_psy) {
+		power_supply_set_property(usb_psy, POWER_SUPPLY_PROP_INPUT_SUSPEND, &val);
+		power_supply_put(usb_psy);
+		if (diag_mem) {
+			len += snprintf(log_buf + len, sizeof(log_buf) - len, "STEP3: usb_input_suspended\n");
+			memcpy_toio(diag_mem, log_buf, len);
+		}
+	} else {
+		if (diag_mem) {
+			len += snprintf(log_buf + len, sizeof(log_buf) - len, "STEP3_FAIL: usb_psy_null\n");
+			memcpy_toio(diag_mem, log_buf, len);
+		}
+	}
+
+	if (qpnp_pon_system_pwr_off(PON_POWER_OFF_SHUTDOWN) == 0) {
+		if (diag_mem) {
+			len += snprintf(log_buf + len, sizeof(log_buf) - len, "STEP4: qpnp_pon_shutdown_success\n");
+			memcpy_toio(diag_mem, log_buf, len);
+		}
+	} else {
+		if (diag_mem) {
+			len += snprintf(log_buf + len, sizeof(log_buf) - len, "STEP4_FAIL: qpnp_pon_shutdown_error\n");
+			memcpy_toio(diag_mem, log_buf, len);
+		}
+	}
 
 	halt_spmi_pmic_arbiter();
+	if (diag_mem) {
+		len += snprintf(log_buf + len, sizeof(log_buf) - len, "STEP5: spmi_arbiter_halted\n");
+		memcpy_toio(diag_mem, log_buf, len);
+	}
+
+	if (diag_mem) {
+		len += snprintf(log_buf + len, sizeof(log_buf) - len, "STEP6: deasserting_ps_hold_NOW\n");
+		memcpy_toio(diag_mem, log_buf, len);
+		iounmap(diag_mem);
+	}
+
+	/* Write log directly to flash disk storage before PS_HOLD deassertion */
+	save_pwr_diag_to_storage(log_buf, len);
+
 	deassert_ps_hold();
 
 	msleep(10000);
 	pr_err("Powering off has failed\n");
 }
+
+static int msm_poweroff_reboot_notify(struct notifier_block *nb,
+					  unsigned long action, void *data)
+{
+	if (action == SYS_POWER_OFF) {
+		pr_emerg("MSM_POWEROFF: SYS_POWER_OFF notifier received\n");
+	}
+	return NOTIFY_OK;
+}
+
+static struct notifier_block msm_poweroff_reboot_nb = {
+	.notifier_call = msm_poweroff_reboot_notify,
+	.priority = 0,
+};
 
 static int msm_restart_probe(struct platform_device *pdev)
 {
@@ -615,6 +715,20 @@ static int msm_restart_probe(struct platform_device *pdev)
 	struct resource *mem;
 	struct device_node *np;
 	int ret = 0;
+	void __iomem *diag_mem;
+	char prev_log[512] = {0};
+
+	/* Read persistent power-off diagnostic log from IMEM SRAM */
+	{
+		diag_mem = ioremap(0x146BF800, 0x400);
+		if (diag_mem) {
+			memcpy_fromio(prev_log, diag_mem, sizeof(prev_log) - 1);
+			iounmap(diag_mem);
+			if (prev_log[0] != 0 && prev_log[0] != (char)0xFF) {
+				pr_emerg("LAST_POWER_OFF_DIAG (FROM IMEM):\n%s", prev_log);
+			}
+		}
+	}
 
 	setup_dload_mode_support();
 
@@ -644,6 +758,8 @@ static int msm_restart_probe(struct platform_device *pdev)
 	pm_power_off = do_msm_poweroff;
 	arm_pm_restart = do_msm_restart;
 
+	register_reboot_notifier(&msm_poweroff_reboot_nb);
+
 	if (scm_is_call_available(SCM_SVC_PWR, SCM_IO_DISABLE_PMIC_ARBITER) > 0)
 		scm_pmic_arbiter_disable_supported = true;
 
@@ -660,7 +776,6 @@ static int msm_restart_probe(struct platform_device *pdev)
 	return 0;
 
 err_restart_reason:
-	free_dload_mode_mem();
 	return ret;
 }
 

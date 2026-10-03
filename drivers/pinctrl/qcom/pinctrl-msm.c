@@ -1438,7 +1438,8 @@ static void msm_pinctrl_setup_pm_reset(struct msm_pinctrl *pctrl)
 				dev_err(pctrl->dev,
 					"failed to setup restart handler.\n");
 			poweroff_pctrl = pctrl;
-			pm_power_off = msm_ps_hold_poweroff;
+			if (!pm_power_off)
+				pm_power_off = msm_ps_hold_poweroff;
 			break;
 		}
 }

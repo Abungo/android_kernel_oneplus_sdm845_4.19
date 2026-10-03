@@ -1223,9 +1223,16 @@ static long bt_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	return ret;
 }
 
+static void bt_power_shutdown(struct platform_device *pdev)
+{
+	BT_PWR_DBG("bt_power_shutdown: turning off all BT regulators");
+	bluetooth_power(0);
+}
+
 static struct platform_driver bt_power_driver = {
 	.probe = bt_power_probe,
 	.remove = bt_power_remove,
+	.shutdown = bt_power_shutdown,
 	.driver = {
 		.name = "bt_power",
 		.of_match_table = bt_power_match_table,
