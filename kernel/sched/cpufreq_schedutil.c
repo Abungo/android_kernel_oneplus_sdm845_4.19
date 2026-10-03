@@ -1443,6 +1443,17 @@ static struct cpufreq_governor schedutil_gov = {
 	.limits			= sugov_limits,
 };
 
+static struct cpufreq_governor helix_schedutil_gov = {
+	.name			= "helix_schedutil",
+	.owner			= THIS_MODULE,
+	.dynamic_switching	= true,
+	.init			= sugov_init,
+	.exit			= sugov_exit,
+	.start			= sugov_start,
+	.stop			= sugov_stop,
+	.limits			= sugov_limits,
+};
+
 #ifdef CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL
 struct cpufreq_governor *cpufreq_default_governor(void)
 {
@@ -1452,6 +1463,9 @@ struct cpufreq_governor *cpufreq_default_governor(void)
 
 static int __init sugov_register(void)
 {
-	return cpufreq_register_governor(&schedutil_gov);
+	int ret = cpufreq_register_governor(&schedutil_gov);
+	if (ret)
+		return ret;
+	return cpufreq_register_governor(&helix_schedutil_gov);
 }
 fs_initcall(sugov_register);
